@@ -34,6 +34,11 @@ Built with **FastAPI**, **LangGraph**, and **Fireworks AI**.
    CLIENT_SECRETS_FILE=client_secrets.json
    TOKEN_FILE=token.json
    MYEMAIL=your_email@example.com
+   NOTIFICATION_EMAIL=your_notification_email@example.com
+   LANGSMITH_PROJECT=your_project_name
+   # Optional: LangSmith tracing
+   LANGSMITH_API_KEY=your_langsmith_key
+   LANGSMITH_TRACING=true
    ```
 
 ## ⚡ Usage
@@ -55,9 +60,28 @@ curl -X POST "http://127.0.0.1:8000/api/v1/new_email" \
 - `api.py`: FastAPI entry point.
 - `models/`: Gmail & Calendar logic.
 - `tools/`: LangGraph tools.
-- `agent.ipynb`: Development notebook.
 - `client_secrets.json`: Google Credentials (Gmail & Calendar).
+- `syn_env_to_gcp.sh`: Script to sync environment variables to Google Manager Secret.
+- `deploy.ps1`: Deployment script for Google Cloud Run.
+
+## ☁️ Deployment
+
+To deploy to Google Cloud Run using the provided PowerShell script:
+
+> ⚠️ **Important**: Before deploying, run the `agent.ipynb` notebook locally. This step is crucial to initialize the Google API connection and generate the necessary authentication tokens (`token.json`) required for the application to function correctly.
+
+1. Ensure you have the Google Cloud SDK installed and authenticated.
+2. Run the environment script to send files and variables to google manager secret.
+   ```bash
+   ./syn_env_to_gcp.sh
+   ```
+3. Run the deployment script:
+   ```powershell
+   ./deploy.ps1
+   ```
 
 ## License
 
 This project is open source and available under the [MIT License](LICENSE).
+
+
