@@ -1,13 +1,11 @@
 from langchain.tools import tool
 from typing import List
-from googleapiclient.errors import HttpError
-from models.gmail_manager import GmailManager
 from datetime import datetime
 from pathlib import Path
 from langgraph.graph import StateGraph, MessagesState, START
 from langgraph.prebuilt import ToolNode, tools_condition
-# from langgraph.types import interrupt, Command
-from langgraph.checkpoint.memory import MemorySaver
+
+from models.gmail_manager import GmailManager
 
 
 def collect_tools(instance):
@@ -33,97 +31,9 @@ def get_time_now():
 
     return datetime.now().isoformat()
 
-def get_last_n_email_ids(gm: GmailManager, me: str, n: int) -> List[str] | str:
-    """Retourne les IDs des n messages récents de l'INBOX sans le label 'done'.
-       Si un message est marqué 'inprogress', il n'est retourné que si le dernier
-       message du thread est reçu (et non une réponse envoyée par nous).
-    """
-    
-    if not isinstance(n, int) or n <= 0:
-        return "Error: 'n' must be a positive integer."
-
-    try:
-        try:
-            lbl_resp = gm.service.users().labels().list(userId=gm.user_id).execute()
-            labels = (lbl_resp.get('labels') or [])
-            done_label_id = next(
-                (l.get('id') for l in labels if l.get('name', '').lower() == 'done'),
-                None
-            )
-            inprogress_label_id = next(
-                (l.get('id') for l in labels if l.get('name', '').lower() == 'inprogress'),
-                None
-            )
-        except HttpError as e:
-            done_label_id = None
-
-        resp = gm.service.users().messages().list(
-            userId=gm.user_id,
-            labelIds=['INBOX'],
-            maxResults=n
-        ).execute()
-        messages = resp.get('messages', []) if resp else []
-        if not messages:
-            return []
-
-        result: List[str] = []
-        for m in messages:
-            mid = m.get('id')
-            if not mid:
-                continue
-            try:
-                msg = gm.service.users().messages().get(
-                    userId=gm.user_id,
-                    id=mid,
-                    format='metadata'
-                ).execute()
-                label_ids = msg.get('labelIds', []) or []
-
-                # Exclure si 'done'
-                if done_label_id and done_label_id in label_ids:
-                    continue
-
-                # Ne pas utiliser les labels; déterminer via From/To si le dernier message est une réponse
-                thread_id = msg.get('threadId')
-                if thread_id:
-                    try:
-                        thread = gm.service.users().threads().get(
-                            userId=gm.user_id,
-                            id=thread_id,
-                            format='metadata'
-                        ).execute()
-                        t_msgs = thread.get('messages', []) or []
-                        if t_msgs:
-                            last_msg = t_msgs[-1]
-                            headers = (last_msg.get('payload') or {}).get('headers') or []
-                            def _get_hdr(name: str) -> str:
-                                for h in headers:
-                                    if h.get('name', '').lower() == name.lower():
-                                        return h.get('value', '')
-                                return ''
-                            from_h = (_get_hdr('From') or '').lower()
-                            to_h = (_get_hdr('To') or '').lower()
-                            # Si le dernier message vient de cette adresse, on le considère comme une réponse -> on exclut
-                            if 'taslimamindiakassa80@gmail.com' in from_h:
-                                continue
-                    except HttpError as e:
-                        print(f"Error fetching thread {thread_id}: {e}")
-                        # En cas d'erreur, on ne filtre pas davantage
-
-                # Cas normal (non 'inprogress' et non 'done')
-                result.append(mid)
-            except HttpError as e:
-                print(f"Error fetching message {mid}: {e}")
-                continue
-
-        return result
-    except HttpError as e:
-        error = f"Error fetching last {n} emails: {e}"
-        print(error)
-        return error
-    
 def system_prompt() -> str:
-    # Cherche prompt.txt en remontant depuis le dossier du module, puis dans le cwd.
+    """Search for a file named 'prompt.txt' in the current directory and its parent directories."""
+
     try:
         base = Path(__file__).resolve()
     except Exception:
@@ -143,7 +53,9 @@ def system_prompt() -> str:
             return ""
     return ""
 
-def open_llm_connection(model_name: str = "accounts/fireworks/models/gpt-oss-120b", api_key: str = None, model_type: str = "fireworks", temperature: float = 0.5):
+def open_llm_connection(model_name: str = "accounts/fireworks/models/gpt-oss-120b", 
+    api_key: str = None, model_type: str = "fireworks", temperature: float = 0.5):
+    """Initialize and return a language model based on the specified type."""
     if model_type == "fireworks":
         from langchain_fireworks import ChatFireworks
         model_name = "accounts/fireworks/models/gpt-oss-120b"
@@ -159,6 +71,14 @@ def open_llm_connection(model_name: str = "accounts/fireworks/models/gpt-oss-120
         return llm
     
 def create_graph(tools: List, llm, memory=None) -> StateGraph:
+    """Create a state graph for the chat agent with the given tools and language model.
+    
+    Args:
+        tools (List): A list of tools to be used by the agent.
+        llm: The language model to be used by the agent.
+        memory: Optional memory checkpointer for the graph.
+    """
+
     builder = StateGraph(MessagesState)
 
     llm_with_tools = llm.bind_tools(tools)
@@ -180,6 +100,14 @@ def create_graph(tools: List, llm, memory=None) -> StateGraph:
     return graph
 
 def call_graph_without_logs(graph, query: str = None, prompt: str = None, config: dict = None):
+    """Invoke the state graph with the provided query and prompt, returning the final response.
+
+    Args:
+        graph: The state graph to be invoked.
+        query (str): The user query to be processed.
+        prompt (str): The system prompt to guide the agent.
+        config (dict): Optional configuration for the graph invocation.
+    """
     messages = []
     if not prompt and not query:
         return "No input provided."
@@ -195,3 +123,25 @@ def call_graph_without_logs(graph, query: str = None, prompt: str = None, config
         state = graph.invoke({"messages": messages})
     
     return state["messages"][-1].content
+
+
+def get_last_n_email_ids(gm: GmailManager, n: int = 5) -> List[str]:
+    """Retrieve the IDs of the last n emails from the user's inbox.
+
+    Args:
+        gm (GmailManager): An instance of GmailManager to interact with Gmail API.
+        n (int): The number of recent email IDs to retrieve.
+
+    Returns:
+        List[str]: A list of email IDs.
+    """
+    email_ids = []
+    try:
+        results = gm.service.users().messages().list(userId='me', maxResults=n).execute()
+        messages = results.get('messages', [])
+        for message in messages:
+            email_ids.append(message['id'])
+    except Exception as e:
+        print(f"An error occurred while fetching email IDs: {e}")
+    
+    return email_ids
