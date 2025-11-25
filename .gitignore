@@ -20,3 +20,7 @@ env/
 # OS specific
 .DS_Store
 Thumbs.db
+
+.gcloudignore
+command.sh
+test_api.ipynb
