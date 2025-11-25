@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -18,13 +19,36 @@ from langsmith import traceable
 from langgraph.checkpoint.memory import MemorySaver
 from dotenv import load_dotenv
 
+
+
 load_dotenv()
 
-# Configuration
+
+raw_client_secrets = os.getenv("GOOGLE_CLIENT_SECRETS_PATH", os.getenv("CLIENT_SECRETS_FILE", "./client_secrets.json"))
+raw_token_path = os.getenv("GOOGLE_TOKEN_PATH", os.getenv("TOKEN_FILE", "./token.json"))
+
+
+def get_writable_path(source_path, filename):
+    if source_path.startswith("/secrets"):
+        writable_dest = f"/tmp/{filename}"
+        # Copy the secret file to /tmp to be able to read AND modify it
+        if os.path.exists(source_path):
+            shutil.copy(source_path, writable_dest)
+            return writable_dest
+    return source_path
+
+CLIENT_SECRETS_FILE = raw_client_secrets 
+TOKEN_FILE = get_writable_path(raw_token_path, "token.json")
 FIREWORKS_API_KEY = os.getenv("FIREWORKS_API_KEY")
-CLIENT_SECRETS_FILE = os.getenv("CLIENT_SECRETS_FILE")
-TOKEN_FILE = os.getenv("TOKEN_FILE")
 MYEMAIL = os.getenv("MYEMAIL")
+
+
+logging.basicConfig(level=logging.INFO)
+logging.info(f"FIREWORKS_API_KEY: {FIREWORKS_API_KEY}")
+logging.info(f"CLIENT_SECRETS_FILE: {CLIENT_SECRETS_FILE}")
+logging.info(f"TOKEN_FILE: {TOKEN_FILE}")
+logging.info(f"MYEMAIL: {MYEMAIL}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -49,7 +73,7 @@ def process_new_email(request: DataRequest):
     logging.info(f"Received request to process email with ID: {message_id}")
     
     try:
-        query = f"Un nouveau email est arrivée avec message_id={message_id}"
+        query = f"A new email has arrived with message_id={message_id}"
         prompt = system_prompt()
         
         # Call the graph
