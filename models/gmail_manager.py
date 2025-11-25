@@ -144,14 +144,10 @@ class GmailManager(Authenticator):
                         format='full'
                     ).execute()
                 except HttpError as e:
-                    error = f"Error fetching original message: {e}"
-                    print(error)
-                    return error
+                    return f"Error fetching original message: {e}"
 
             if not original_message:
-                error = "Error: Original message missing for draft creation."
-                print(error)
-                return error
+                return "Error: Original message missing for draft creation."
 
             subject = self._get_header(original_message, 'Subject') or ''
             from_header = self._get_header(original_message, 'From') or ''
@@ -183,9 +179,7 @@ class GmailManager(Authenticator):
             else:
                 return "Error: Draft creation failed."
         except HttpError as e:
-            error = f"Error creating draft: {e}"
-            print(error)
-            return error
+            return f"Error creating draft: {e}"
 
     def get_email_by_id(self, message_id: str) -> Optional[GmailMessage]:
         """Retrieve all messages in a conversation (thread) given a message_id.
@@ -195,9 +189,7 @@ class GmailManager(Authenticator):
             message_id: The Gmail message ID of any message in the thread.
         """
         if not message_id:
-            error = "Error: No message id provided."
-            print(error)
-            return error
+            return "Error: No message id provided."
 
         try:
             # Get the message to obtain the threadId
@@ -207,15 +199,11 @@ class GmailManager(Authenticator):
                 format='full'
             ).execute()
         except HttpError as e:
-            error = f"Error fetching message to determine threadId: {e}"
-            print(error)
-            return error
+            return f"Error fetching message to determine threadId: {e}"
 
         thread_id = message.get('threadId')
         if not thread_id:
-            error = "Error: threadId not found for the provided message."
-            print(error)
-            return error
+            return "Error: threadId not found for the provided message."
 
         try:
             # Retrieve the full thread
@@ -236,9 +224,7 @@ class GmailManager(Authenticator):
                 })
             return results
         except HttpError as e:
-            error = f"Error fetching thread messages: {e}"
-            print(error)
-            return error
+            return f"Error fetching thread messages: {e}"
 
     def mark_message_as_not_read(self, message_id: str) -> str:
         """Mark a message as unread by adding the 'UNREAD' label.
@@ -255,7 +241,6 @@ class GmailManager(Authenticator):
             ).execute()
             return "Message marked as unread."
         except HttpError as e:
-            print(f"Error marking message as unread: {e}")
             return f"Error marking message as unread: {e}"
 
     def send_email_error_notification(self, error_message: str) -> str:
@@ -282,116 +267,8 @@ class GmailManager(Authenticator):
 
         try:
             sent = self.service.users().messages().send(userId=self.user_id, body=body).execute()
-            print("Error notification sent successfully.")
             return "Error notification sent successfully."
         except HttpError as e:
-            print(f"Error sending error notification: {e}")
             return f"Error sending error notification: {e}"
-
-    def add_done_label(self, message_id: str) -> str:
-        """Add (or create) a 'done' label to the given Gmail message.
-        If adding 'done' succeeds, remove the 'inprogress' label if present.
-        Returns a success message on success or an error message on failure.
-
-        Args:
-            message_id: The Gmail message ID to label as 'done'.
-        """
-
-        if not message_id:
-            return "Error: No message id provided."
-
-        try:
-            resp = self.service.users().labels().list(userId=self.user_id).execute()
-            labels = resp.get('labels', []) if resp else []
-            done_label = next((l for l in labels if l.get('name', '').lower() == 'done'), None)
-
-            # Create the label if it doesn't exist
-            if not done_label:
-                label_body = {
-                    "name": "done",
-                    "labelListVisibility": "labelShow",
-                    "messageListVisibility": "show"
-                }
-                done_label = self.service.users().labels().create(userId=self.user_id, body=label_body).execute()
-
-            label_id = done_label.get('id')
-            if not label_id:
-                return "Error: Unable to determine 'done' label id."
-
-            # Add the 'done' label to the message
-            self.service.users().messages().modify(
-                userId=self.user_id,
-                id=message_id,
-                body={'addLabelIds': [label_id]}
-            ).execute()
-
-            # Attempt to remove 'inprogress' label if it exists
-            try:
-                resp2 = self.service.users().labels().list(userId=self.user_id).execute()
-                labels2 = resp2.get('labels', []) if resp2 else []
-                inprogress_label = next((l for l in labels2 if l.get('name', '').lower() == 'inprogress'), None)
-
-                if inprogress_label:
-                    inprogress_id = inprogress_label.get('id')
-                    if inprogress_id:
-                        self.service.users().messages().modify(
-                            userId=self.user_id,
-                            id=message_id,
-                            body={'removeLabelIds': [inprogress_id]}
-                        ).execute()
-                        return "Success: 'done' label added and 'inprogress' label removed."
-            except HttpError as e:
-                # 'done' was added successfully but removing 'inprogress' failed
-                print(f"Warning: failed to remove 'inprogress' label: {e}")
-                return "Success: 'done' label added. Warning: failed to remove 'inprogress' label."
-
-            return "Success: 'done' label added."
-        except HttpError as e:
-            error = f"Error adding 'done' label: {e}"
-            print(error)
-            return error
-
-    def add_inprogress_label(self, message_id: str) -> str:
-        """Add (or create) a 'inprogress' label to the given Gmail message.
-           Returns a success message on success or an error message on failure.
-
-        Args:
-            message_id: The Gmail message ID to label as 'inprogress'.
-        """
-        if not message_id:
-            return "Error: No message id provided."
-
-        try:
-            # Try to find existing 'inprogress' label (case-insensitive)
-            resp = self.service.users().labels().list(userId=self.user_id).execute()
-            labels = resp.get('labels', []) if resp else []
-            inprogress_label = next((l for l in labels if l.get('name', '').lower() == 'inprogress'), None)
-
-            # Create the label if it doesn't exist
-            if not inprogress_label:
-                label_body = {
-                    "name": "inprogress",
-                    "labelListVisibility": "labelShow",
-                    "messageListVisibility": "show"
-                }
-                inprogress_label = self.service.users().labels().create(userId=self.user_id, body=label_body).execute()
-
-            label_id = inprogress_label.get('id')
-            if not label_id:
-                return "Error: Unable to determine 'inprogress' label id."
-
-            # Add the label to the message
-            self.service.users().messages().modify(
-                userId=self.user_id,
-                id=message_id,
-                body={'addLabelIds': [label_id]}
-            ).execute()
-
-            return "Success: 'inprogress' label added."
-        except HttpError as e:
-            error = f"Error adding 'inprogress' label: {e}"
-            print(error)
-            return error
-
     
 __all__ = ['GmailManager']
