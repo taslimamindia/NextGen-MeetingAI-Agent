@@ -1,8 +1,8 @@
 from __future__ import annotations
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta, timezone
-from googleapiclient.errors import HttpError
+from datetime import datetime, timedelta
 from models.authentication import Authenticator
+from zoneinfo import ZoneInfo
 
 
 class CalendarManager(Authenticator):
@@ -19,7 +19,7 @@ class CalendarManager(Authenticator):
         super().__init__(client_secrets_file=client_secrets_file, token_file=token_file, scopes=scopes)
         self.service = self.build_service('calendar', 'v3')
         self.calendar_id = calendar_id
-        self.zone = datetime.now().astimezone().tzinfo
+        self.zone = ZoneInfo("America/Toronto")
         self.start_hour = 9
         self.end_hour = 18
 
@@ -217,18 +217,14 @@ class CalendarManager(Authenticator):
             end = self._check_valid_date_and_hour_range(end_date)
 
             if start.date() == end.date():
-                print("Same day range")
                 slots = self._list_available_events(start, end)
                 if slots and isinstance(slots, list) and len(slots) > 0:
                     return self._format_slots_to_str(slots)
 
             slots = self._list_available_events(start, end)
-            print(f"Slots found between {start_date} and {end_date}")
             if slots and isinstance(slots, list) and len(slots) > 0:
-                print("Slots found in range")
                 return self._format_slots_to_str(slots)
             else:
-                print("No slots found in range")
                 slots = self._find_available_slots_after_date(end)
 
                 return f"No available slots were found between {start_date} and {end_date}."
@@ -267,157 +263,114 @@ class CalendarManager(Authenticator):
         except Exception as e:
             return f"An error occurred while finding available slots: {e}"
 
-    def confirmation_meeting(self, time_min: datetime, time_max: datetime, invite_email: str, titre: str, mode: str = 'presentiel') -> Dict[str, Any] | str:
+    def create_or_update_meeting(self, time_min: datetime, time_max: datetime, invite_email: str, titre: str, description: str, mode: str = 'in-person') -> str:
         """Update the event found in the time window [time_min, time_max] by:
-            - adding 'Meeting in person at the office' to the description if mode == 'presentiel'
+            - adding 'Meeting in person at the office' to the description if mode == 'in-person'
             - creating and attaching a Google Meet link if mode == 'online'
             - updating the title and adding the guest (invite_email) to attendees
         Returns: A dict with success status and details or error message.
 
         Args:
-            time_min: datetime, start of the time window to search for the event
-            time_max: datetime, end of the time window to search for the event
+            time_min: datetime, start datetime of slot.
+            time_max: datetime, end datetime of slot.
             invite_email: str, guest email to add to the event
             titre: str, new title for the event
-            mode: str, 'online' or 'presentiel' indicating the meeting mode
+            description: str, description for the event
+            mode: str, 'online' or 'in-person' indicating the meeting mode
         """
-
-        # 1) Search for the event in the given time window
-        try:
-            time_min_rfc = time_min.replace(tzinfo=self.zone)
-            time_max_rfc = time_max.replace(tzinfo=self.zone)
-        except Exception as e:
-            return {"success": False, "error": f"Invalid timestamp: {e}"}
-
-        calendar_id = getattr(self, "calendar_id", "primary")
         
         try:
-            tz = time_min_rfc.tzinfo or self.zone
-            start_s = datetime.combine(time_min_rfc.date(), datetime.min.time(), tz)
-            end_e = start_s + timedelta(days=1)
+            time_min_rfc = time_min.astimezone(self.zone)
+            time_max_rfc = time_max.astimezone(self.zone)
 
-            resp = self.service.events().list(
+            # Weekend check
+            if time_min_rfc.weekday() >= 5:
+                return "Cannot schedule meetings on weekends."
+
+            # Working hours check
+            if time_min_rfc.hour < self.start_hour or time_max_rfc.hour > self.end_hour:
+                return "The provided time window exceeds working hours (9 AM to 6 PM)."
+
+            calendar_id = getattr(self, "calendar_id", "primary")
+
+            # Search for existing event (same day, same title, same attendee)
+            day_start = datetime.combine(time_min_rfc.date(), datetime.min.time(), self.zone)
+            day_end = day_start + timedelta(days=1)
+
+            events_result = self.service.events().list(
                 calendarId=calendar_id,
-                timeMin=start_s.isoformat(),
-                timeMax=end_e.isoformat(),
+                timeMin=day_start.isoformat(),
+                timeMax=day_end.isoformat(),
                 singleEvents=True,
-                orderBy="startTime",
-                maxResults=100
+                orderBy='startTime'
             ).execute()
-            items = (resp or {}).get("items", [])
+            items = events_result.get('items', [])
 
-            availables = []
+            existing_event = None
             for ev in items:
-                s = ev.get("start", {}).get("dateTime")
-                e = ev.get("end", {}).get("dateTime")
-                if not s or not e:
-                    continue
-                try:
-                    s_dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-                    e_dt = datetime.fromisoformat(e.replace("Z", "+00:00"))
-                    if s_dt and e_dt:
-                        title = ev.get("summary", "(no title)")
-                        if ((title and title == "Available") and
-                            s_dt.date() == time_min_rfc.date() and
-                            e_dt.date() == time_max_rfc.date() and
-                            s_dt.hour == time_min_rfc.hour and
-                            e_dt.hour == time_max_rfc.hour and
-                            s_dt.minute == time_min_rfc.minute and
-                            e_dt.minute == time_max_rfc.minute
-                        ):
-                            availables.append(ev)
-                except Exception:
-                    continue
-            items = availables
-        except HttpError as e:
-            return {"success": False, "error": f"Error while searching events: {e}"}
-
-        if not items:
-            return {"success": False, "error": "No event found in the provided time window."}
-
-        # 2) Choose the event 
-        chosen = items[0] if items else None
-        event_id = chosen["id"]
-        try:
-            start_date = chosen.get("start", {}).get("dateTime")
-            start_date = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
-            end_date = chosen.get("end", {}).get("dateTime")
-            end_date = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
-            if not start_date or not end_date:
-                time_min_rfc = start_date.replace(tzinfo=self.zone)
-                time_max_rfc = end_date.replace(tzinfo=self.zone)
-        except Exception as e:
-            return {"success": False, "error": f"Invalid timestamp: {e}"}
-
-        # 3) Prepare modifications
-        mode_norm = (mode or "").strip().lower()
-        if mode_norm not in ("online", "presentiel"):
-            return {"success": False, "error": "Invalid 'mode'. Use 'online' or 'presentiel'."}
-
-        description = chosen.get("description", "") or ""
-        if mode_norm == "presentiel":
-            add_desc = "Meeting in person at the office."
-        else:
-            add_desc = "Meeting online meeting (Google Meet)."
-
-        if add_desc not in description:
-            description = f"{description.rstrip()}\n{add_desc}".strip()
-
-        attendees = chosen.get("attendees", []) or []
-        emails_existants = {a.get("email", "").lower() for a in attendees}
-        if invite_email and invite_email.lower() not in emails_existants:
-            attendees.append({"email": invite_email})
-
-        body_patch = {
-            "summary": titre,
-            "description": description,
-            "attendees": attendees,
-        }
-
-        # 4) If online, request Meet link creation via conferenceData
-        wants_meet = mode_norm == "online"
-        if wants_meet:
-            body_patch["conferenceData"] = {
-                "createRequest": {
-                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
-                    "requestId": f"meet-{event_id}",
-                }
+                summary = (ev.get('summary') or '').strip()
+                attendees = ev.get('attendees', []) or []
+                attendee_emails = {a.get('email') for a in attendees if a.get('email')}
+                ev_date = self._parse_rfc3339(ev['start'].get('dateTime') or ev['start'].get('date')).date()
+                if summary.lower() == titre.lower() and day_start.date() == ev_date and invite_email.lower() in attendee_emails:
+                    existing_event = ev
+                    break
+            
+            # Build base body
+            event_body = {
+                'summary': titre,
+                'description': description,
+                'start': {'dateTime': time_min_rfc.isoformat()},
+                'end': {'dateTime': time_max_rfc.isoformat()},
+                'attendees': [{'email': invite_email}],
             }
 
-        # 5) Patch the event
-        try:
-            if wants_meet:
-                updated = self.service.events().patch(
+            # Conference handling
+            if mode == 'online':
+                event_body['conferenceData'] = {
+                    'createRequest': {
+                    'requestId': f"meet-{int(datetime.now().timestamp())}",
+                    'conferenceSolutionKey': {'type': 'hangoutsMeet'},
+                    }
+                }
+
+            if existing_event:
+                # Merge attendees
+                existing_attendees = existing_event.get('attendees', []) or []
+                existing_emails = {a.get('email') for a in existing_attendees if a.get('email')}
+                if invite_email not in existing_emails:
+                    existing_attendees.append({'email': invite_email})
+                event_body['attendees'] = existing_attendees
+
+                event = self.service.events().update(
                     calendarId=calendar_id,
-                    eventId=event_id,
-                    body=body_patch,
+                    eventId=existing_event['id'],
+                    body=event_body,
                     conferenceDataVersion=1,
+                    sendUpdates='all'
                 ).execute()
+                action_type = "updated"
             else:
-                updated = self.service.events().patch(
+                for item in items:
+                    item_date_start = self._parse_rfc3339(item['start'].get('dateTime') or item['start'].get('date'))
+                    item_date_end = self._parse_rfc3339(item['end'].get('dateTime') or item['end'].get('date'))
+                    if ((item_date_start <= time_min_rfc <= item_date_end) or 
+                        (item_date_start <= time_max_rfc <= item_date_end)):
+                        return "The specified time slot overlaps with an existing event. Please choose a different time."
+                    
+                event = self.service.events().insert(
                     calendarId=calendar_id,
-                    eventId=event_id,
-                    body=body_patch,
+                    body=event_body,
+                    conferenceDataVersion=1,
+                    sendUpdates='all'
                 ).execute()
-        except HttpError as e:
-            return {"success": False, "error": f"Error while updating event: {e}"}
+                action_type = "created"
 
-        # 6) Retrieve Meet link (if online)
-        meet_link = None
-        if wants_meet:
-            meet_link = updated.get("hangoutLink")
-            if not meet_link:
-                entry_points = (updated.get("conferenceData") or {}).get("entryPoints") or []
-                for ep in entry_points:
-                    if ep.get("entryPointType") in ("video", "more"):
-                        meet_link = ep.get("uri")
-                        if meet_link:
-                            break
-
-        return {
-            "success": True,
-            "event": "The event has been successfully updated."
-        }
+            if not event:
+                return f"Failed to {action_type} the event."
+            return f"Success: The meeting has been successfully {action_type}."
+        except Exception as e:
+            return f"An error occurred while reserving the meeting: {e}"
 
 
 __all__ = ['CalendarManager']
