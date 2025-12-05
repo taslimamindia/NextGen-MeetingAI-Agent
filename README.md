@@ -2,6 +2,8 @@
 
 **NextGen Meeting AI Agent** is an intelligent assistant that automates meeting scheduling. It connects to your Gmail and Google Calendar to detect meeting requests, check availability, and draft responses automatically. It can also finalize the booking by scheduling the slot in your calendar once the requester confirms their choice.
 
+I gratefully acknowledge the guidance and supervision of [Professor Pierre‑Marc Jodoin](https://jodoin.github.io/) throughout this project.
+
 Built with **FastAPI**, **LangGraph**, and **Fireworks AI**.
 
 ## ✨ Key Features
